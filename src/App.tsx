@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef } from 'react';
 import {
   Camera, RefreshCw, Sliders, Clock,
   Shield, AlertTriangle, CheckCircle2, Eye,
-  Smartphone, ArrowRight, Zap, X
+  Smartphone, ArrowRight, X
 } from 'lucide-react';
 
 // ==========================================
@@ -287,6 +287,8 @@ interface Duty {
   sectors: Sector[];
   restDuration?: string;
   nextReportTime?: string;
+  isOffDay?: boolean;
+  offDayNote?: string;
 }
 
 interface ComplianceResult {
@@ -342,49 +344,116 @@ export default function App() {
   const [scanProgress, setScanProgress] = useState('');
   const [showProcessedDebug, setShowProcessedDebug] = useState(false);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
+  const normalizeOcrTime = (value: string): string => {
+    const cleaned = value.replace(/[^0-9]/g, '');
+    return cleaned.length >= 4 ? cleaned.slice(0, 4) : value;
+  };
+
   // Parse text into duty structure
+  const normalizeHeaderLine = (line: string): string => {
+    const trimmed = line.replace(/\s+/g, ' ').trim();
+    const cleaned = trimmed.replace(/^(\d{1,2}\s+[A-Za-z]{3})\s+[A-Za-z]{1,3}(?:\s+\d{1,2})?\s*$/i, '$1');
+    return cleaned || trimmed;
+  };
+
   const parseRosterText = (text: string): Duty[] => {
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const lines = text
+      .replace(/\r/g, '')
+      .split('\n')
+      .map(line => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
     const duties: Duty[] = [];
     let currentDuty: Duty | null = null;
 
     lines.forEach(line => {
-      if (/^\d{1,2}\s+[A-Za-z]{3}/.test(line) || /^\d{2}\/\d{2}\/\d{4}/.test(line)) {
+      const normalizedLine = normalizeHeaderLine(line);
+
+      if (/^(\d{1,2}\s+[A-Za-z]{3}|[A-Za-z]{3}\s+\d{1,2}|\d{2}\/\d{2}\/\d{4})/i.test(normalizedLine)) {
         if (currentDuty) duties.push(currentDuty);
-        currentDuty = { dateHeader: line, reportTime: '', debriefTime: '', sectors: [], restDuration: '', nextReportTime: '' };
+        currentDuty = { dateHeader: normalizedLine, reportTime: '', debriefTime: '', sectors: [], restDuration: '', nextReportTime: '' };
         return;
       }
+
       if (!currentDuty) currentDuty = { dateHeader: 'Duty Day', reportTime: '', debriefTime: '', sectors: [] };
 
-      const reportMatch = line.match(/Reporting\s*time\s*:\s*(\d{4})/i);
-      if (reportMatch) { currentDuty.reportTime = reportMatch[1]; return; }
+      const offDayLine = line.toLowerCase();
+      if (
+        /day\s*off/.test(offDayLine) ||
+        /off\s*day/.test(offDayLine) ||
+        /guaranteed\s*day\s*off/.test(offDayLine) ||
+        /\bgdo\b/.test(offDayLine) ||
+        /off\s*[-:]\s*day\s*off/.test(offDayLine) ||
+        /^off$/.test(offDayLine)
+      ) {
+        currentDuty.isOffDay = true;
+        currentDuty.offDayNote = line;
+        return;
+      }
 
-      const debriefMatch = line.match(/Debriefing\s*time\s*:\s*(\d{4})/i);
-      if (debriefMatch) { currentDuty.debriefTime = debriefMatch[1]; return; }
+      const reportMatch = line.match(/Reporting\s*time\s*[:\-]?\s*([A-Z]?\d{3,4})(?:\+\d)?/i);
+      if (reportMatch) { currentDuty.reportTime = normalizeOcrTime(reportMatch[1]); return; }
 
-      const restMatch = line.match(/Rest\s*:\s*(\d{1,2}:\d{2})\s*\(([^)]+)\)/i);
+      const debriefMatch = line.match(/Debriefing\s*time\s*[:\-]?\s*([A-Z]?\d{3,4})(?:\+\d)?/i);
+      if (debriefMatch) { currentDuty.debriefTime = normalizeOcrTime(debriefMatch[1]); return; }
+
+      const restMatch = line.match(/Rest\s*[:\-]?\s*(\d{1,2}:\d{2})\s*\(([^)]+)\)/i);
       if (restMatch) {
         currentDuty.restDuration = restMatch[1];
         currentDuty.nextReportTime = restMatch[2];
         return;
       }
 
-      const sectorMatch = line.match(/^([A-Z0-9]{2,6})\s+(\d{4})\s+([A-Z]{3})\s+([A-Z]{3})\s+(\d{4})(?:\s+(DHC|PAX))?/i);
+      const locationMatch = line.match(/Location\s*[:\-]?\s*([A-Z]{3})/i);
+      if (currentDuty.isOffDay && locationMatch) {
+        currentDuty.offDayNote = `${currentDuty.offDayNote || 'Off day'} · ${locationMatch[1]}`;
+        return;
+      }
+
+      const sectorMatch = line.match(/^([A-Z0-9]{2,8})\s+([A-Z]?\d{3,4}(?:\+\d)?)\s+([A-Z]{3})\s+([A-Z]{3})\s+([A-Z]?\d{3,4}(?:\+\d)?)(?:\s+(DHC|PAX))?/i);
       if (sectorMatch) {
+        const depTime = normalizeOcrTime(sectorMatch[2]);
+        const arrTime = normalizeOcrTime(sectorMatch[5]);
+
         currentDuty.sectors.push({
           flightNo: sectorMatch[1].toUpperCase(),
-          depTime: sectorMatch[2],
+          depTime,
           depIata: sectorMatch[3].toUpperCase(),
           arrIata: sectorMatch[4].toUpperCase(),
-          arrTime: sectorMatch[5],
+          arrTime,
           isDeadhead: !!sectorMatch[6],
           dhcTag: sectorMatch[6] ? sectorMatch[6].toUpperCase() : ''
         });
+        return;
+      }
+
+      const shortenedSectorMatch = line.match(/^([A-Z0-9]{2,8})\s+([A-Z]?\d{3,4}(?:\+\d)?)\s+([A-Z]?\d{3,4}(?:\+\d)?)/i);
+      if (shortenedSectorMatch) {
+        currentDuty.sectors.push({
+          flightNo: shortenedSectorMatch[1].toUpperCase(),
+          depTime: normalizeOcrTime(shortenedSectorMatch[2]),
+          depIata: '',
+          arrIata: '',
+          arrTime: normalizeOcrTime(shortenedSectorMatch[3]),
+          isDeadhead: false,
+          dhcTag: ''
+        });
+        return;
+      }
+
+      const timeOnlyPairMatch = line.match(/^([A-Z]?\d{3,4}(?:\+\d)?)\s+([A-Z]?\d{3,4}(?:\+\d)?)/i);
+      if (timeOnlyPairMatch && currentDuty.sectors.length > 0) {
+        const last = currentDuty.sectors[currentDuty.sectors.length - 1];
+        last.depTime = normalizeOcrTime(timeOnlyPairMatch[1]);
+        last.arrTime = normalizeOcrTime(timeOnlyPairMatch[2]);
+        return;
       }
     });
+
     if (currentDuty) duties.push(currentDuty);
     return duties;
   };
@@ -436,6 +505,25 @@ export default function App() {
     });
   };
 
+  const readLocalOcrFallback = async (processedBase64: string): Promise<string> => {
+    setScanProgress('Fallback OCR review in progress...');
+
+    const response = await fetch(processedBase64);
+    const blob = await response.blob();
+    const TesseractLib = await import('tesseract.js');
+
+    const result = await TesseractLib.recognize(blob, 'eng', {
+      logger: (message: { status?: string; progress?: number }) => {
+        if (message.status === 'recognizing text') {
+          const pct = Math.round((message.progress ?? 0) * 100);
+          setScanProgress(`Fallback OCR review: ${pct}%`);
+        }
+      }
+    });
+
+    return result.data.text;
+  };
+
   // ==========================================================
   // GEMINI VISION MULTI-MODAL SCANNING ENGINE
   // ==========================================================
@@ -447,52 +535,54 @@ export default function App() {
     setScanProgress('Initializing Computer Vision Mainframe...');
 
     try {
-      // Step 1: Image Pre-processing
       setScanProgress('Preprocessing pixels (Grayscale & Contrast Boost)...');
       const { processedBase64 } = await preprocessImage(file);
       const cleanBase64 = processedBase64.split(',')[1];
 
-      // Step 2: Gemini 3 Flash Vision Processing
-      setScanProgress('Sending image stream to Gemini Vision AI...');
-      const apiKey = ""; // Runtime automatically injects
-      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+      try {
+        setScanProgress('Sending image stream to Gemini Vision AI...');
+        const response = await fetch('/api/gemini', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mimeType: 'image/jpeg',
+            imageBase64: cleanBase64
+          })
+        });
 
-      const prompt = `Act as an expert aviation schedule OCR reader. Read this airline flight roster schedule screenshot carefully.
-Extract all duty days with the exact format:
-[Date Header like "10 Thu"]
-Reporting time : HHMM
-[FlightNo] [DepTime] [DepIATA] [ArrIATA] [ArrTime] [DHC if positioning]
-Debriefing time : HHMM
-Rest : HH:MM (Date HH:MM)
+        if (!response.ok) {
+          throw new Error(`Gemini request failed (${response.status})`);
+        }
 
-Output ONLY the plain text formatted schedule lines, with no markdown code blocks, no explanation.`;
+        const result: { text?: string } = await response.json();
+        const extractedText = result.text;
 
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            role: 'user',
-            parts: [
-              { text: prompt },
-              { inlineData: { mimeType: 'image/jpeg', data: cleanBase64 } }
-            ]
-          }]
-        })
-      });
+        if (extractedText && extractedText.includes('Reporting time')) {
+          setRosterRawText(extractedText.trim());
+          setScanProgress('Scan complete!');
+          setActiveTab('analysis');
+          return;
+        }
+      } catch (err) {
+        console.warn('Gemini scan failed, rolling to local OCR fallback:', err);
+      }
 
-      const result = await response.json();
-      const extractedText = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+      const fallbackText = await readLocalOcrFallback(processedBase64);
+      const normalizedText = fallbackText
+        .replace(/\r/g, '')
+        .replace(/\s+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
 
-      if (extractedText && extractedText.includes('Reporting time')) {
-        setRosterRawText(extractedText.trim());
-        setScanProgress('Scan complete!');
+      if (normalizedText && (normalizedText.includes('Reporting time') || /\b[A-Z]{2,6}\s+\d{4}\b/.test(normalizedText))) {
+        setRosterRawText(normalizedText);
+        setScanProgress('Local OCR fallback complete!');
       } else {
         setRosterRawText('');
         setScanProgress('Roster could not be read. Paste or edit your roster below.');
       }
     } catch (err) {
-      console.warn("API scan error:", err);
+      console.warn('Scan error:', err);
       setRosterRawText('');
       setScanProgress('Scan unavailable. Paste or edit your roster below.');
     } finally {
@@ -505,7 +595,31 @@ Output ONLY the plain text formatted schedule lines, with no markdown code block
   // MATHEMATICAL FDP COMPLIANCE ENGINE
   // ==========================================================
   const evaluateDutyCompliance = (duty: Duty): ComplianceResult | null => {
-    if (!duty || !duty.sectors || duty.sectors.length === 0) return null;
+    if (!duty) return null;
+
+    if (duty.isOffDay) {
+      const emptySector: Sector = { flightNo: 'OFF', depTime: '', depIata: '', arrIata: '', arrTime: '', isDeadhead: false, dhcTag: '' };
+      return {
+        patternType: 'OFF DAY',
+        requiredReportMinsBefore: 0,
+        expectedReportTime: '',
+        actualReportTime: '',
+        onboardMinsBefore: 0,
+        requiredOnboardTimestamp: '',
+        actualFdpMins: 0,
+        maxLegalFdpMins: 0,
+        maxBaseFdpHours: 0,
+        marginMins: 0,
+        isLegalFdp: true,
+        totalDutyMins: 0,
+        calculatedDebrief: '',
+        firstSector: emptySector,
+        lastSector: emptySector,
+        ruleSource: duty.offDayNote || 'OFF DAY'
+      };
+    }
+
+    if (!duty.sectors || duty.sectors.length === 0) return null;
 
     const firstSector = duty.sectors[0];
     const lastSector = duty.sectors[duty.sectors.length - 1];
@@ -701,33 +815,53 @@ Output ONLY the plain text formatted schedule lines, with no markdown code block
                   </p>
                 </div>
 
-                <div className="pt-2">
+                <div className="pt-2 space-y-2">
                   <input
                     type="file"
-                    ref={fileInputRef}
-                    onChange={handlePhotoCapture}
+                    ref={cameraInputRef}
+                    onChange={(event) => {
+                      handlePhotoCapture(event);
+                      event.target.value = '';
+                    }}
                     accept="image/*"
                     capture="environment"
                     className="hidden"
                   />
 
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={isScanning}
-                    className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl font-black text-xs uppercase tracking-wider shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 transition-all active:scale-95"
-                  >
-                    {isScanning ? (
-                      <>
+                  <input
+                    type="file"
+                    ref={galleryInputRef}
+                    onChange={(event) => {
+                      handlePhotoCapture(event);
+                      event.target.value = '';
+                    }}
+                    accept="image/*"
+                    className="hidden"
+                  />
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => cameraInputRef.current?.click()}
+                      disabled={isScanning}
+                      className="py-3 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl font-black text-[10px] uppercase tracking-wider shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 transition-all active:scale-95"
+                    >
+                      {isScanning ? (
                         <RefreshCw className="w-4 h-4 animate-spin text-white" />
-                        Scanning Image...
-                      </>
-                    ) : (
-                      <>
-                        <Zap className="w-4 h-4 text-amber-300" />
-                        Take Photo / Upload Roster
-                      </>
-                    )}
-                  </button>
+                      ) : (
+                        <Camera className="w-4 h-4 text-amber-300" />
+                      )}
+                      Camera
+                    </button>
+
+                    <button
+                      onClick={() => galleryInputRef.current?.click()}
+                      disabled={isScanning}
+                      className="py-3 px-4 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-black text-[10px] uppercase tracking-wider border border-slate-700 flex items-center justify-center gap-2 transition-all active:scale-95"
+                    >
+                      <Eye className="w-4 h-4 text-blue-300" />
+                      Gallery
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -828,10 +962,17 @@ Output ONLY the plain text formatted schedule lines, with no markdown code block
               </div>
 
               {!compliance ? (
-                <div className="p-8 text-center text-slate-500 bg-slate-950 rounded-2xl border border-slate-800">
-                  <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-50 text-amber-400" />
-                  <p className="text-xs font-bold">No sector data found.</p>
-                </div>
+                currentDuty?.isOffDay ? (
+                  <div className="p-5 rounded-2xl border border-emerald-500/50 bg-gradient-to-br from-emerald-950/70 via-slate-900 to-slate-900 text-center">
+                    <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">Day Off Detected</p>
+                    <p className="mt-3 text-lg font-black text-white">{currentDuty.offDayNote || 'OFF / Day Off'}</p>
+                  </div>
+                ) : (
+                  <div className="p-8 text-center text-slate-500 bg-slate-950 rounded-2xl border border-slate-800">
+                    <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-50 text-amber-400" />
+                    <p className="text-xs font-bold">No sector data found.</p>
+                  </div>
+                )
               ) : (
                 <>
                   {/* MAIN LEGALITY BANNER */}

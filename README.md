@@ -1,32 +1,40 @@
-# React + TypeScript + Vite
+# FDP Online
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+## Gemini API key
 
-Currently, two official plugins are available:
+Copy `.env.example` to `.env` and add your Gemini API key:
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Keep `.env` private. The key is read by the local server and is not included in
+the browser bundle. Never use a `VITE_` prefix for this secret.
+
+## Run locally
+
+Use Node.js 20.6 or newer. In one terminal, start the Gemini API server:
+
+```sh
+npm run server
+```
+
+In a second terminal, start the web app:
+
+```sh
+npm run dev
+```
+
+The development server forwards `/api` requests to the local API server. If
+`GEMINI_API_KEY` is missing or Gemini is unavailable, roster scanning falls
+back to local OCR.
+
+## Build
+
+```sh
+npm run build
+```
+
+For deployment, run the API server with `GEMINI_API_KEY` configured in the
+server environment and route `/api` requests to it. Do not put the key in
+frontend hosting settings or ship it with static assets.
