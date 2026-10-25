@@ -13,7 +13,7 @@ the browser bundle. Never use a `VITE_` prefix for this secret.
 
 ## Run locally
 
-Use Node.js 20.6 or newer. In one terminal, start the Gemini API server:
+Use Node.js 20.6 or newer. For local development, start the Gemini API server:
 
 ```sh
 npm run server
@@ -29,12 +29,10 @@ The development server forwards `/api` requests to the local API server. If
 `GEMINI_API_KEY` is missing or Gemini is unavailable, roster scanning falls
 back to local OCR.
 
-## Build
+## Deploy to Cloud Run
 
-```sh
-npm run build
-```
-
-For deployment, run the API server with `GEMINI_API_KEY` configured in the
-server environment and route `/api` requests to it. Do not put the key in
-frontend hosting settings or ship it with static assets.
+Deploy from the repository root (the directory containing `package.json`) on
+the `master` branch. The build creates the frontend, and `npm start` serves it
+alongside the Gemini API. Cloud Run provides the `PORT` environment variable;
+set `GEMINI_API_KEY` as a server-side Cloud Run secret, not as a frontend
+build variable. Never commit `.env` or put the key in source code.
